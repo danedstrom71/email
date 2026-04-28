@@ -2,7 +2,6 @@ const https      = require("https");
 const http       = require("http");
 const fs         = require("fs");
 const path       = require("path");
-const nodemailer = require("nodemailer");
 const cron       = require("node-cron");
 const {
   Document, Packer, Paragraph, TextRun, AlignmentType,
@@ -17,12 +16,19 @@ const {
 
 const KONFIG = {
   anthropicKey : process.env.ANTHROPIC_API_KEY  || "",
-  gmailUser    : process.env.GMAIL_USER          || "",
-  gmailPass    : process.env.GMAIL_APP_PASSWORD  || "",
-  mottagare    : (process.env.MOTTAGARE          || "").split(",").map(s => s.trim()).filter(Boolean),
   port         : process.env.PORT                || 3000,
   dagar        : 7,
 };
+
+// ─────────────────────────────────────────────
+// RAPPORTKATALOG
+// ─────────────────────────────────────────────
+
+const REPORTS_DIR = path.join(__dirname, "reports");
+if (!fs.existsSync(REPORTS_DIR)) {
+  fs.mkdirSync(REPORTS_DIR, { recursive: true });
+  console.log("[init] Skapade katalog: reports/");
+}
 
 // ─────────────────────────────────────────────
 // LOGG (in-memory, max 100 rader)
@@ -327,39 +333,6 @@ function byggWord(text, start, slut, totalt) {
 }
 
 // ─────────────────────────────────────────────
-// MEJL
-// ─────────────────────────────────────────────
-
-async function skickaMejl(buf, start, slut, totalt) {
-  const transport = nodemailer.createTransport({ service:"gmail", auth:{ user:KONFIG.gmailUser, pass:KONFIG.gmailPass } });
-  const fil = `medierapport-${new Date().toISOString().slice(0,10)}.docx`;
-  await transport.sendMail({
-    from: `"C Mediebevakning" <${KONFIG.gmailUser}>`,
-    to: KONFIG.mottagare.join(", "),
-    subject: `Medierapport Centerpartiet – ${start} – ${slut}`,
-    html: `<div style="font-family:Arial,sans-serif;max-width:580px">
-      <div style="background:#0F1F1A;padding:28px;border-bottom:4px solid #009A6E">
-        <p style="color:#009A6E;font-size:11px;margin:0 0 8px;letter-spacing:2px">CENTERPARTIET · MEDIEBEVAKNING</p>
-        <h1 style="color:white;margin:0;font-size:26px">Medierapport</h1>
-        <p style="color:rgba(255,255,255,0.55);margin:6px 0 0;font-size:14px">${start} – ${slut}</p>
-      </div>
-      <div style="padding:24px;background:#f8fafc;border:1px solid #e2e8f0">
-        <p style="color:#334155;margin:0 0 16px">Veckans medierapport är bifogad som Word-dokument.</p>
-        <div style="background:white;border:1px solid #e2e8f0;border-radius:8px;padding:16px;font-size:13px;color:#64748b">
-          📊 <strong>${totalt} artiklar</strong> analyserade<br>
-          📅 Period: ${start} – ${slut}<br>
-          🕒 Genererad: ${new Date().toLocaleString("sv-SE")}
-        </div>
-      </div>
-      <div style="padding:14px 24px;background:#f1f5f9;font-size:11px;color:#94a3b8">
-        Automatisk rapport · Centerpartiet Kampanjstab · Konfidentiellt
-      </div>
-    </div>`,
-    attachments: [{ filename:fil, content:buf, contentType:"application/vnd.openxmlformats-officedocument.wordprocessingml.document" }]
-  });
-}
-
-// ─────────────────────────────────────────────
 // RAPPORT-KÖRNING
 // ─────────────────────────────────────────────
 
@@ -411,14 +384,16 @@ async function körRapport(källa = "cron") {
     const buf = await Packer.toBuffer(doc);
     logg("Word klart");
 
-    // Mejl
-    logg("Skickar mejl…");
-    await skickaMejl(buf, periodStart, slut, alleArt.length);
-    logg(`✅ Mejl skickat till: ${KONFIG.mottagare.join(", ")}`, "success");
+    // Spara till disk
+    const ts = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
+    const filnamn = `medierapport-${ts}.docx`;
+    const filsökväg = path.join(REPORTS_DIR, filnamn);
+    fs.writeFileSync(filsökväg, buf);
+    logg(`✅ Rapport sparad: ${filnamn}`, "success");
 
     const sek = Math.round((Date.now() - start) / 1000);
     logg(`Rapport klar på ${sek}s`, "success");
-    return { ok: true, msg: `Rapport skickad på ${sek}s. ${alleArt.length} artiklar analyserade.` };
+    return { ok: true, msg: `Rapport genererad på ${sek}s. ${alleArt.length} artiklar analyserade.`, filnamn };
 
   } catch (e) {
     logg(`❌ Fel: ${e.message}`, "error");
@@ -569,7 +544,60 @@ const HTML = `<!DOCTYPE html>
     display: none;
   }
   .btn-result.ok { background: rgba(0,154,110,0.15); border: 1px solid rgba(0,154,110,0.3); color: #6ee7b7; }
+  .btn-result.ok a { color: #6ee7b7; font-weight: 600; text-decoration: underline; }
+  .btn-result.ok a:hover { color: #a7f3d0; }
   .btn-result.fel { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: #fca5a5; }
+
+  /* RAPPORTLISTA */
+  .rapporter-rubrik {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--gra);
+    margin-bottom: 12px;
+    margin-top: 32px;
+  }
+
+  .rapporter-lista {
+    background: rgba(0,0,0,0.3);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 12px;
+    overflow: hidden;
+    margin-bottom: 32px;
+  }
+
+  .rapport-rad {
+    padding: 14px 20px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    font-size: 13px;
+  }
+  .rapport-rad:last-child { border-bottom: none; }
+  .rapport-info { display: flex; flex-direction: column; gap: 3px; }
+  .rapport-namn { color: rgba(255,255,255,0.85); font-weight: 500; }
+  .rapport-meta { color: var(--gra); font-size: 12px; }
+  .rapport-dl {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(0,154,110,0.15);
+    border: 1px solid rgba(0,154,110,0.3);
+    color: #6ee7b7;
+    border-radius: 8px;
+    padding: 7px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    text-decoration: none;
+    transition: all 0.15s;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .rapport-dl:hover { background: rgba(0,154,110,0.28); border-color: rgba(0,154,110,0.5); color: #a7f3d0; }
+  .rapporter-tom { padding: 24px; text-align: center; color: var(--gra); font-size: 13px; }
 
   /* NÄSTA KÖRNING */
   .nästa {
@@ -655,6 +683,11 @@ const HTML = `<!DOCTYPE html>
     <div class="btn-result" id="result"></div>
   </div>
 
+  <div class="rapporter-rubrik">Senaste rapporter</div>
+  <div class="rapporter-lista" id="rapporter">
+    <div class="rapporter-tom">Inga rapporter ännu</div>
+  </div>
+
   <div class="logg-rubrik">Körningslogg</div>
   <div class="logg" id="logg">
     <div class="logg-tom">Ingen aktivitet ännu</div>
@@ -697,10 +730,15 @@ const HTML = `<!DOCTYPE html>
     try {
       const svar = await fetch("/kor", { method: "POST" });
       const data = await svar.json();
-      result.textContent = data.msg;
+      if (data.ok && data.filnamn) {
+        result.innerHTML = \`✅ Rapport genererad – <a href="/download/\${data.filnamn}" download>klicka här för att ladda ned</a>\`;
+      } else {
+        result.textContent = data.msg;
+      }
       result.className = "btn-result " + (data.ok ? "ok" : "fel");
       result.style.display = "block";
       hämtaLogg();
+      hämtaRapporter();
     } catch(e) {
       result.textContent = "Nätverksfel: " + e.message;
       result.className = "btn-result fel";
@@ -708,7 +746,26 @@ const HTML = `<!DOCTYPE html>
     } finally {
       btn.disabled = false;
       btn.classList.remove("laddar");
+      btn.lastChild.textContent = " Gör rapport direkt";
     }
+  }
+
+  async function hämtaRapporter() {
+    try {
+      const svar = await fetch("/reports");
+      const filer = await svar.json();
+      const el = document.getElementById("rapporter");
+      if (!filer.length) { el.innerHTML = '<div class="rapporter-tom">Inga rapporter ännu</div>'; return; }
+      el.innerHTML = filer.map(f => \`
+        <div class="rapport-rad">
+          <div class="rapport-info">
+            <span class="rapport-namn">📄 \${f.filnamn}</span>
+            <span class="rapport-meta">\${f.datum} · \${f.storlek}</span>
+          </div>
+          <a class="rapport-dl" href="/download/\${f.filnamn}" download>⬇ Ladda ned</a>
+        </div>\`
+      ).join("");
+    } catch {}
   }
 
   async function hämtaLogg() {
@@ -727,7 +784,9 @@ const HTML = `<!DOCTYPE html>
   }
 
   hämtaLogg();
+  hämtaRapporter();
   setInterval(hämtaLogg, 5000);
+  setInterval(hämtaRapporter, 30000);
 </script>
 </body>
 </html>`;
@@ -753,6 +812,42 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
     res.end(JSON.stringify(LOG));
 
+  } else if (req.method === "GET" && url === "/reports") {
+    try {
+      const filer = fs.readdirSync(REPORTS_DIR)
+        .filter(f => f.endsWith(".docx"))
+        .map(f => {
+          const stat = fs.statSync(path.join(REPORTS_DIR, f));
+          const kb = (stat.size / 1024).toFixed(0);
+          return {
+            filnamn: f,
+            datum: stat.mtime.toLocaleString("sv-SE"),
+            storlek: `${kb} KB`,
+          };
+        })
+        .sort((a, b) => b.filnamn.localeCompare(a.filnamn));
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(filer));
+    } catch (e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+
+  } else if (req.method === "GET" && url.startsWith("/download/")) {
+    const filnamn = path.basename(url.slice("/download/".length));
+    const filsökväg = path.join(REPORTS_DIR, filnamn);
+    if (!filnamn.endsWith(".docx") || !fs.existsSync(filsökväg)) {
+      res.writeHead(404); res.end("Filen hittades inte.");
+    } else {
+      const stat = fs.statSync(filsökväg);
+      res.writeHead(200, {
+        "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "Content-Disposition": `attachment; filename="${filnamn}"`,
+        "Content-Length": stat.size,
+      });
+      fs.createReadStream(filsökväg).pipe(res);
+    }
+
   } else if (req.method === "GET" && url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: true, körsNu, loggrader: LOG.length }));
@@ -764,5 +859,4 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(KONFIG.port, () => {
   logg(`Server startad på port ${KONFIG.port}`, "success");
-  logg(`Mottagare: ${KONFIG.mottagare.join(", ") || "(ej konfigurerat)"}`);
 });
