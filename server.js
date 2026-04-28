@@ -2,7 +2,6 @@ const https      = require("https");
 const http       = require("http");
 const fs         = require("fs");
 const path       = require("path");
-const nodemailer = require("nodemailer");
 const cron       = require("node-cron");
 const {
   Document, Packer, Paragraph, TextRun, AlignmentType,
@@ -17,12 +16,18 @@ const {
 
 const KONFIG = {
   anthropicKey : process.env.ANTHROPIC_API_KEY  || "",
-  gmailUser    : process.env.GMAIL_USER          || "",
-  gmailPass    : process.env.GMAIL_APP_PASSWORD  || "",
-  mottagare    : (process.env.MOTTAGARE          || "").split(",").map(s => s.trim()).filter(Boolean),
   port         : process.env.PORT                || 3000,
   dagar        : 7,
 };
+
+// ─────────────────────────────────────────────
+// RAPPORTKATALOG
+// ─────────────────────────────────────────────
+
+const REPORTS_DIR = path.join(__dirname, "reports");
+if (!fs.existsSync(REPORTS_DIR)) {
+  fs.mkdirSync(REPORTS_DIR, { recursive: true });
+}
 
 // ─────────────────────────────────────────────
 // LOGG (in-memory, max 100 rader)
@@ -327,36 +332,15 @@ function byggWord(text, start, slut, totalt) {
 }
 
 // ─────────────────────────────────────────────
-// MEJL
+// FILLAGRING
 // ─────────────────────────────────────────────
 
-async function skickaMejl(buf, start, slut, totalt) {
-  const transport = nodemailer.createTransport({ service:"gmail", auth:{ user:KONFIG.gmailUser, pass:KONFIG.gmailPass } });
-  const fil = `medierapport-${new Date().toISOString().slice(0,10)}.docx`;
-  await transport.sendMail({
-    from: `"C Mediebevakning" <${KONFIG.gmailUser}>`,
-    to: KONFIG.mottagare.join(", "),
-    subject: `Medierapport Centerpartiet – ${start} – ${slut}`,
-    html: `<div style="font-family:Arial,sans-serif;max-width:580px">
-      <div style="background:#0F1F1A;padding:28px;border-bottom:4px solid #009A6E">
-        <p style="color:#009A6E;font-size:11px;margin:0 0 8px;letter-spacing:2px">CENTERPARTIET · MEDIEBEVAKNING</p>
-        <h1 style="color:white;margin:0;font-size:26px">Medierapport</h1>
-        <p style="color:rgba(255,255,255,0.55);margin:6px 0 0;font-size:14px">${start} – ${slut}</p>
-      </div>
-      <div style="padding:24px;background:#f8fafc;border:1px solid #e2e8f0">
-        <p style="color:#334155;margin:0 0 16px">Veckans medierapport är bifogad som Word-dokument.</p>
-        <div style="background:white;border:1px solid #e2e8f0;border-radius:8px;padding:16px;font-size:13px;color:#64748b">
-          📊 <strong>${totalt} artiklar</strong> analyserade<br>
-          📅 Period: ${start} – ${slut}<br>
-          🕒 Genererad: ${new Date().toLocaleString("sv-SE")}
-        </div>
-      </div>
-      <div style="padding:14px 24px;background:#f1f5f9;font-size:11px;color:#94a3b8">
-        Automatisk rapport · Centerpartiet Kampanjstab · Konfidentiellt
-      </div>
-    </div>`,
-    attachments: [{ filename:fil, content:buf, contentType:"application/vnd.openxmlformats-officedocument.wordprocessingml.document" }]
-  });
+async function sparaRapport(buf) {
+  const ts = new Date().toISOString().replace(/:/g, "").replace("T", "-").slice(0, 15);
+  const filnamn = `medierapport-${ts}.docx`;
+  const filsökväg = path.join(REPORTS_DIR, filnamn);
+  fs.writeFileSync(filsökväg, buf);
+  return filnamn;
 }
 
 // ─────────────────────────────────────────────
@@ -411,14 +395,14 @@ async function körRapport(källa = "cron") {
     const buf = await Packer.toBuffer(doc);
     logg("Word klart");
 
-    // Mejl
-    logg("Skickar mejl…");
-    await skickaMejl(buf, periodStart, slut, alleArt.length);
-    logg(`✅ Mejl skickat till: ${KONFIG.mottagare.join(", ")}`, "success");
+    // Spara till disk
+    logg("Sparar rapport till disk…");
+    const filnamn = await sparaRapport(buf);
+    logg(`✅ Rapport sparad: ${filnamn}`, "success");
 
     const sek = Math.round((Date.now() - start) / 1000);
     logg(`Rapport klar på ${sek}s`, "success");
-    return { ok: true, msg: `Rapport skickad på ${sek}s. ${alleArt.length} artiklar analyserade.` };
+    return { ok: true, msg: `Rapport genererad på ${sek}s. ${alleArt.length} artiklar analyserade.`, filnamn };
 
   } catch (e) {
     logg(`❌ Fel: ${e.message}`, "error");
@@ -618,6 +602,55 @@ const HTML = `<!DOCTYPE html>
   .logg-rad.warn .logg-msg { color: #fde68a; }
   .logg-rad.info .logg-msg { color: rgba(255,255,255,0.8); }
   .logg-tom { padding: 24px; text-align: center; color: var(--gra); font-size: 13px; }
+
+  /* RAPPORTLISTA */
+  .rapporter-rubrik {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--gra);
+    margin-bottom: 12px;
+    margin-top: 32px;
+  }
+
+  .rapporter-lista {
+    background: rgba(0,0,0,0.3);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 12px;
+    overflow: hidden;
+    margin-bottom: 32px;
+  }
+
+  .rapport-rad {
+    padding: 14px 20px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    align-items: center;
+    gap: 16px;
+    font-size: 13px;
+  }
+  .rapport-rad:last-child { border-bottom: none; }
+  .rapport-namn { color: rgba(255,255,255,0.85); font-weight: 500; }
+  .rapport-meta { color: var(--gra); font-size: 12px; white-space: nowrap; }
+  .rapport-dl {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(0,154,110,0.15);
+    border: 1px solid rgba(0,154,110,0.35);
+    color: #6ee7b7;
+    border-radius: 8px;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    text-decoration: none;
+    transition: background 0.15s;
+    white-space: nowrap;
+  }
+  .rapport-dl:hover { background: rgba(0,154,110,0.28); }
+  .rapporter-tom { padding: 24px; text-align: center; color: var(--gra); font-size: 13px; }
 </style>
 </head>
 <body>
@@ -655,13 +688,17 @@ const HTML = `<!DOCTYPE html>
     <div class="btn-result" id="result"></div>
   </div>
 
+  <div class="rapporter-rubrik">Tillgängliga rapporter</div>
+  <div class="rapporter-lista" id="rapporter">
+    <div class="rapporter-tom">Laddar rapporter…</div>
+  </div>
+
   <div class="logg-rubrik">Körningslogg</div>
   <div class="logg" id="logg">
     <div class="logg-tom">Ingen aktivitet ännu</div>
   </div>
 
 </div>
-
 <script>
   // Beräkna nästa söndag kl 15:00
   function nästa() {
@@ -686,6 +723,12 @@ const HTML = `<!DOCTYPE html>
   uppdateraNästa();
   setInterval(uppdateraNästa, 60000);
 
+  function formateraStorlek(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / 1048576).toFixed(1) + ' MB';
+  }
+
   async function körNu() {
     const btn = document.getElementById("btn");
     const result = document.getElementById("result");
@@ -697,10 +740,15 @@ const HTML = `<!DOCTYPE html>
     try {
       const svar = await fetch("/kor", { method: "POST" });
       const data = await svar.json();
-      result.textContent = data.msg;
+      if (data.ok && data.filnamn) {
+        result.innerHTML = \`✅ Rapport genererad – <a href="/download/\${data.filnamn}" style="color:#6ee7b7;font-weight:700;">klicka här för att ladda ned</a>\`;
+      } else {
+        result.textContent = data.msg;
+      }
       result.className = "btn-result " + (data.ok ? "ok" : "fel");
       result.style.display = "block";
       hämtaLogg();
+      hämtaRapporter();
     } catch(e) {
       result.textContent = "Nätverksfel: " + e.message;
       result.className = "btn-result fel";
@@ -709,6 +757,25 @@ const HTML = `<!DOCTYPE html>
       btn.disabled = false;
       btn.classList.remove("laddar");
     }
+  }
+
+  async function hämtaRapporter() {
+    try {
+      const svar = await fetch("/reports");
+      const filer = await svar.json();
+      const el = document.getElementById("rapporter");
+      if (!filer.length) {
+        el.innerHTML = '<div class="rapporter-tom">Inga rapporter genererade ännu</div>';
+        return;
+      }
+      el.innerHTML = filer.map(f =>
+        \`<div class="rapport-rad">
+          <span class="rapport-namn">📄 \${f.filnamn}</span>
+          <span class="rapport-meta">\${formateraStorlek(f.storlek)} · \${f.skapad}</span>
+          <a class="rapport-dl" href="/download/\${f.filnamn}" download>⬇ Ladda ned</a>
+        </div>\`
+      ).join("");
+    } catch {}
   }
 
   async function hämtaLogg() {
@@ -726,8 +793,10 @@ const HTML = `<!DOCTYPE html>
     } catch {}
   }
 
+  hämtaRapporter();
   hämtaLogg();
   setInterval(hämtaLogg, 5000);
+  setInterval(hämtaRapporter, 30000);
 </script>
 </body>
 </html>`;
@@ -757,6 +826,37 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: true, körsNu, loggrader: LOG.length }));
 
+  } else if (req.method === "GET" && url === "/reports") {
+    try {
+      const filer = fs.readdirSync(REPORTS_DIR)
+        .filter(f => f.endsWith(".docx"))
+        .map(f => {
+          const stat = fs.statSync(path.join(REPORTS_DIR, f));
+          return { filnamn: f, storlek: stat.size, skapad: stat.mtime.toLocaleString("sv-SE") };
+        })
+        .sort((a, b) => b.filnamn.localeCompare(a.filnamn));
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(filer));
+    } catch (e) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+
+  } else if (req.method === "GET" && url.startsWith("/download/")) {
+    const filnamn = path.basename(url.slice("/download/".length));
+    const filsökväg = path.join(REPORTS_DIR, filnamn);
+    if (!filnamn.endsWith(".docx") || !fs.existsSync(filsökväg)) {
+      res.writeHead(404); res.end("Filen hittades inte.");
+      return;
+    }
+    const buf = fs.readFileSync(filsökväg);
+    res.writeHead(200, {
+      "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "Content-Disposition": `attachment; filename="${filnamn}"`,
+      "Content-Length": buf.length,
+    });
+    res.end(buf);
+
   } else {
     res.writeHead(404); res.end("404");
   }
@@ -764,5 +864,5 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(KONFIG.port, () => {
   logg(`Server startad på port ${KONFIG.port}`, "success");
-  logg(`Mottagare: ${KONFIG.mottagare.join(", ") || "(ej konfigurerat)"}`);
+  logg(`Rapportkatalog: ${REPORTS_DIR}`);
 });
