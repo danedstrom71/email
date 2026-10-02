@@ -248,7 +248,7 @@ Analytisk, direkt, utan floskler.
 ${underlag}`;
 
   const body = JSON.stringify({
-    model: "claude-opus-4-5",
+    model: "claude-opus-5-5",
     max_tokens: 4000,
     messages: [{ role: "user", content: prompt }]
   });
