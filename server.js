@@ -249,7 +249,7 @@ ${underlag}`;
 
   const body = JSON.stringify({
     model: process.env.ANTHROPIC_MODEL || "claude-opus-5-5",
-    max_tokens: 4000,
+    max_tokens: parseInt(process.env.ANTHROPIC_MAX_TOKENS || "16000", 10),
     messages: [{ role: "user", content: prompt }]
   });
 
