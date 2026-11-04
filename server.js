@@ -248,7 +248,7 @@ Analytisk, direkt, utan floskler.
 ${underlag}`;
 
   const body = JSON.stringify({
-    model: "claude-opus-5-5",
+    model: process.env.ANTHROPIC_MODEL || "claude-opus-5-5",
     max_tokens: 4000,
     messages: [{ role: "user", content: prompt }]
   });
@@ -268,8 +268,15 @@ ${underlag}`;
       let data = "";
       res.on("data", c => data += c);
       res.on("end", () => {
-        try { resolve(JSON.parse(data).content?.[0]?.text || "Ingen rapport."); }
-        catch(e) { reject(e); }
+        try {
+          const j = JSON.parse(data);
+          if (res.statusCode !== 200 || j.error) {
+            return reject(new Error(`Claude API ${res.statusCode}: ${j.error?.message || data.slice(0, 300)}`));
+          }
+          const text = (j.content || []).filter(b => b.type === "text").map(b => b.text).join("\n").trim();
+          if (!text) return reject(new Error("Claude returnerade ingen text (stop_reason: " + j.stop_reason + ")"));
+          resolve(text);
+        } catch(e) { reject(e); }
       });
     });
     req.on("error", reject);
